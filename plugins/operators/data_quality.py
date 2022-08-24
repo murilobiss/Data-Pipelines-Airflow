@@ -2,47 +2,39 @@ from airflow.hooks.postgres_hook import PostgresHook
 from airflow.models import BaseOperator
 from airflow.utils.decorators import apply_defaults
 
-"""
-Summary line. 
-DataQualityOperator creates a node in the dag 
-to count number of rows in the Redshift tables
-and raises ERROR when it encounters 0 rows. 
-"""
 class DataQualityOperator(BaseOperator):
 
     ui_color = '#89DA59'
 
     @apply_defaults
     def __init__(self,
-                 # Define your operators params (with defaults) here
                  redshift_conn_id="",
-                 tables=[],
+                 table_names=[""],
                  *args, **kwargs):
 
         super(DataQualityOperator, self).__init__(*args, **kwargs)
-        # Map params here
-        self.tables = tables
         self.redshift_conn_id = redshift_conn_id
+        self.table_names = table_names
 
     def execute(self, context):
-        redshift_hook = PostgresHook(self.redshift_conn_id)        
-        errors = []
-        self.log.info(self.tables)
-        for table in self.tables:            
-            records = redshift_hook.get_records(f"SELECT COUNT(*) FROM {table}")
-            
+        redshift = PostgresHook(postgres_conn_id=self.redshift_conn_id)
+        for table in self.table_names:
+            # Check that entries are being copied to table
+            records = redshift.get_records(f"SELECT COUNT(*) FROM {table}")
             if len(records) < 1 or len(records[0]) < 1:
-                errors.append(f"Data quality check failed. {table} returned no results")
-                                
-            num_records = records[0][0]
-            self.log.info(f"Number of rows in {table} = {num_records}")
-            
-            if num_records < 1:
-                errors.append(f"Data quality check failed. {table} contained 0 rows")            
-                
-        if len(errors) > 0:
-           for err in errors:
-               self.log.info(err)                
-           raise ValueError(f"Data quality check failed. Check log for more information")                
-        else:
-           self.log.info(f"Data quality on tables {self.tables} check passed.")
+                raise ValueError(f"Data quality check failed. {table} returned no results")
+
+        # Check that there are no rows with null ids
+        dq_checks=[
+            {'table': 'users',
+             'check_sql': "SELECT COUNT(*) FROM users WHERE userid is null",
+             'expected_result': 0},
+            {'table': 'songs',
+             'check_sql': "SELECT COUNT(*) FROM songs WHERE songid is null",
+             'expected_result': 0}
+        ]
+        for check in dq_checks:
+             records = redshift.get_records(check['check_sql'])
+             if records[0] != check['expected_result']:
+                raise ValueError(f"Data quality check failed. {check['table']} \
+                                   contains null in id column")
